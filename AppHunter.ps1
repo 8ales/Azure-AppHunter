@@ -13,7 +13,7 @@ function Show-Banner {
 | (_| | / / | |_| || |   |  __/                  | (_| || |_) || |_) || | | || |_| || | | || |_ |  __/| |
  \__,_|/___| \__,_||_|    \___|                   \__,_|| .__/ | .__/ |_| |_| \__,_||_| |_| \__| \___||_|
 
-  Azure AppHunter v1.0 by Nintendo
+  Azure AppHunter v1.0 by Nintendo && @nickvourd
 '@
     Write-Host $banner -ForegroundColor Cyan
     Write-Host "Welcome to AzureAppHunter!" -ForegroundColor Green
@@ -626,3 +626,4 @@ function Find-SubscriptionOwnersContributors {
         Write-Host "`n[-] No Service Principals or Managed Identities found with Owner/Contributor roles on Subscriptions." -ForegroundColor Red
     }
 }
+
