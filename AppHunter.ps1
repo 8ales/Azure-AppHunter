@@ -153,7 +153,7 @@ Specify "SubscriptionOwnersContributors" to enumerate Subscription Owners & Cont
 
 .EXAMPLE
 Enumerate -Type ServicePrincipalsDangerousPermissions
-Enumerate -Type ServicePrincipalsDangerousPermissions -ExportCSV
+Enumerate -Type ServicePrincipalsDangerousPermissions -ExportSP
 Enumerate -Type PrivilegedRoleAssignments
 Enumerate -Type SubscriptionOwnersContributors
 #>
@@ -164,7 +164,7 @@ function Enumerate {
         [string]$Type,
 
         [Parameter]
-        [bool]$ExportCSV = $false
+        [bool]$ExportSP = $false
     )
 
     switch ($Type) {
@@ -471,7 +471,7 @@ function Get-DangerousPermissions {
                 ServicePrincipalId  = $ServicePrincipalId
                 DangerousPermissions = $permissionName
             } 
-        if ($exportCSV){$dangerousSPs | Export-CSV -Path "$($global:ToolName)_DangerousServicePrincipals.csv" -NoTypeInformation -Append}
+        if ($ExportSP){$dangerousSPs | Export-CSV -Path "$($global:ToolName)_DangerousServicePrincipals.csv" -NoTypeInformation -Append}
         } 
     }
 }
