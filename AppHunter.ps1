@@ -163,8 +163,9 @@ function Enumerate {
         [ValidateSet("ServicePrincipalsDangerousPermissions", "PrivilegedRoleAssignments", "SubscriptionOwnersContributors")]
         [string]$Type,
 
-        [Parameter]
+        [Parameter(Mandatory = $false)]
         [switch]$ExportSP
+
     )
 
     switch ($Type) {
