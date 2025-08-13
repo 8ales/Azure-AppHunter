@@ -260,6 +260,7 @@ Specify "SubscriptionOwnersContributors" to enumerate Subscription Owners & Cont
 
 .EXAMPLE
 Enumerate -Type ServicePrincipalsDangerousPermissions
+Enumerate -Type ServicePrincipalsDangerousPermissions -ExportCSV
 Enumerate -Type PrivilegedRoleAssignments
 Enumerate -Type SubscriptionOwnersContributors
 #>
@@ -267,7 +268,9 @@ function Enumerate {
     param (
         [Parameter(Mandatory = $true)]
         [ValidateSet("ServicePrincipalsDangerousPermissions", "PrivilegedRoleAssignments", "SubscriptionOwnersContributors")]
-        [string]$Type
+        [string]$Type,
+        [Parameter(Mandatory = $false)]
+        [bool]$ExportCSV = $false
     )
 
     switch ($Type) {
@@ -430,43 +433,6 @@ function Get-ARMToken {
     }
 }
 
-
-# Internal function to find dangerous Service Principals (hidden from help)
-# function Find-DangerousServicePrincipals {
-#     Write-Host "Will search for Dangerous Permissions"
-#     # Get all Enterprise Applications (Service Principals)
-#     $enterpriseAppsUrl = "https://graph.microsoft.com/v1.0/servicePrincipals?$filter=servicePrincipalType eq 'Application'"
-#     $enterpriseApps = Invoke-RestMethod -Uri $enterpriseAppsUrl -Headers @{ "Authorization" = "Bearer $global:GraphAccessToken" } -Method Get
-#     Write-Host "Pulling all Enterprise Applications"
-#     # Output the results
-#     foreach ($app in $enterpriseApps.value) {
-#             # Write-Host "Testing application $($app.appDisplayName)"
-#             if ($($app.appDisplayName)) {
-#                 Get-DangerousPermissions -ServicePrincipalId $app.id -appDisplayName $($app.appDisplayName)
-#             }
-#             else {
-#                 Get-DangerousPermissions -ServicePrincipalId $app.id
-#             }
-            
-#     }
-#     # Handle pagination (check for nextLink)
-#     while ($enterpriseApps.'@odata.nextLink') {
-#         Write-Host "Checking next page of API requests"
-#         $nextUrl = $enterpriseApps.'@odata.nextLink'
-#         $enterpriseApps = Invoke-RestMethod -Uri $nextUrl -Headers @{ "Authorization" = "Bearer $global:GraphAccessToken" } -Method Get
-
-#         foreach ($app in $enterpriseApps.value) {
-#             # Write-Host "Testing application $($app.appDisplayName)"
-#             if ($($app.appDisplayName)) {
-#                 Get-DangerousPermissions -ServicePrincipalId $app.id -appDisplayName $($app.appDisplayName)
-#             }
-#             else {
-#                 Get-DangerousPermissions -ServicePrincipalId $app.id
-#             }
-#         }
-#     }
-# }
-
 function Find-DangerousServicePrincipals {
     Write-Host "Checking for required roles or permissions..."
 
@@ -601,7 +567,7 @@ function Get-DangerousPermissions {
                 ServicePrincipalId  = $ServicePrincipalId
                 DangerousPermissions = $permissionName
             } 
-           # $dangerousSPs | Export-CSV -Path "$($global:ToolName)_DangerousServicePrincipals.csv" -NoTypeInformation -Append
+        if ($exportCSV){$dangerousSPs | Export-CSV -Path "$($global:ToolName)_DangerousServicePrincipals.csv" -NoTypeInformation -Append}
         } 
     }
 }
