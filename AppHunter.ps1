@@ -126,13 +126,13 @@ function Get-MicrosoftGraphToken {
                 return
             }
         }
-
-    # Stop polling if the expiration time has been reached
-    if ($totalWaitTime -ge $expiresIn) {
-        Write-Host "Authentication window has expired. Please try again." -ForegroundColor Red
-        $continue = $false
+    
+        # Stop polling if the expiration time has been reached
+        if ($totalWaitTime -ge $expiresIn) {
+            Write-Host "Authentication window has expired. Please try again." -ForegroundColor Red
+            $continue = $false
+        }
     }
-}
 }
 
 # Function to enumerate Service Principals and find dangerous permissions
@@ -703,3 +703,4 @@ function Find-SubscriptionOwnersContributors {
         Write-Host "`n[-] No Service Principals or Managed Identities found with Owner/Contributor roles on Subscriptions." -ForegroundColor Red
     }
 }
+
