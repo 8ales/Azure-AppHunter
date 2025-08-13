@@ -135,8 +135,112 @@ function Get-MicrosoftGraphToken {
 }
 }
 
+function Get-MicrosoftGraphTokenWithConditionalRoleCheck {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$TenantId
+    )
 
+    $psClientId = "1950a258-227b-4e31-a9cf-717495945fc2"  # Microsoft Graph PowerShell Client ID
+    $deviceCodeUrl = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/devicecode"
+    $graphScope = "https://graph.microsoft.com/.default"
+    $body = @{
+        client_id = $psClientId
+        scope     = $graphScope
+    }
 
+    try {
+        $authResponse = Invoke-RestMethod -Method Post -Uri $deviceCodeUrl -ContentType "application/x-www-form-urlencoded" -Body $body
+        Write-Host "Please authenticate by visiting $($authResponse.verification_uri) and entering the code: $($authResponse.user_code)"
+    } catch {
+        Write-Error "Failed to initiate device code flow: $_"
+        return
+    }
+
+    $interval = $authResponse.interval
+    $expiresIn = $authResponse.expires_in
+    $tokenUrl = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
+    $tokenBody = @{
+        client_id   = $psClientId
+        grant_type  = "urn:ietf:params:oauth:grant-type:device_code"
+        device_code = $authResponse.device_code
+    }
+
+    $graphTokenResponse = $null
+    $totalWaitTime = 0
+    $continue = $true
+
+    while ($continue -and $totalWaitTime -lt $expiresIn) {
+        try {
+            $graphTokenResponse = Invoke-RestMethod -Method Post -Uri $tokenUrl -ContentType "application/x-www-form-urlencoded" -Body $tokenBody
+            $continue = $false
+        } catch {
+            $details = $_.ErrorDetails.Message | ConvertFrom-Json
+            $continue = $details.error -eq "authorization_pending"
+            Start-Sleep -Seconds $interval
+            $totalWaitTime += $interval
+        }
+    }
+
+    if (-not $graphTokenResponse) {
+        Write-Error "Authentication failed or timed out."
+        return
+    }
+
+    $accessToken = $graphTokenResponse.access_token
+    $headers = @{ Authorization = "Bearer $accessToken" }
+
+    # Get signed-in user info
+    try {
+        $userInfo = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me" -Headers $headers
+        Write-Host "Authenticated as: $($userInfo.displayName) ($($userInfo.userPrincipalName))"
+    } catch {
+        Write-Error "Failed to retrieve user info: $_"
+        return
+    }
+
+    # Get user's Entra roles
+    try {
+        $roles = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/memberOf" -Headers $headers
+    } catch {
+        Write-Error "Failed to retrieve role membership: $_"
+        return
+    }
+
+    # Extract directory roles only
+    $assignedRoles = $roles.value | Where-Object { $_.'@odata.type' -eq "#microsoft.graph.directoryRole" } | Select-Object -ExpandProperty displayName
+
+    # Check for Global Administrator
+    if ($assignedRoles -contains "Global Administrator") {
+        Write-Host "✅ You are a Global Administrator. Skipping role checks." -ForegroundColor Green
+    } else {
+        # Define required roles
+        $requiredRoles = @(
+            "Application Administrator",
+            "Privileged Role Administrator",
+            "User Administrator",
+            "Groups Administrator",
+            "Directory Readers",
+            "Security Reader"
+        )
+
+        $missingRoles = $requiredRoles | Where-Object { $_ -notin $assignedRoles }
+
+        if ($missingRoles.Count -eq 0) {
+            Write-Host "✅ You have all required roles to access the specified Graph API endpoints." -ForegroundColor Green
+        } else {
+            Write-Warning "⚠️ You are missing the following roles required for full access:"
+            $missingRoles | ForEach-Object { Write-Host "- $_" }
+        }
+    }
+
+    # Return token and role info
+    return @{
+        AccessToken = $accessToken
+        UserInfo = $userInfo
+        AssignedRoles = $assignedRoles
+    }
+}
 
 # Function to enumerate Service Principals and find dangerous permissions
 <#
@@ -188,9 +292,6 @@ function Enumerate {
         }
     }
 }
-
-
-
 
 # Internal function to get Microsoft Graph token (hidden from help)
 function Get-MicrosoftGraphToken {
@@ -331,40 +432,118 @@ function Get-ARMToken {
 
 
 # Internal function to find dangerous Service Principals (hidden from help)
+# function Find-DangerousServicePrincipals {
+#     Write-Host "Will search for Dangerous Permissions"
+#     # Get all Enterprise Applications (Service Principals)
+#     $enterpriseAppsUrl = "https://graph.microsoft.com/v1.0/servicePrincipals?$filter=servicePrincipalType eq 'Application'"
+#     $enterpriseApps = Invoke-RestMethod -Uri $enterpriseAppsUrl -Headers @{ "Authorization" = "Bearer $global:GraphAccessToken" } -Method Get
+#     Write-Host "Pulling all Enterprise Applications"
+#     # Output the results
+#     foreach ($app in $enterpriseApps.value) {
+#             # Write-Host "Testing application $($app.appDisplayName)"
+#             if ($($app.appDisplayName)) {
+#                 Get-DangerousPermissions -ServicePrincipalId $app.id -appDisplayName $($app.appDisplayName)
+#             }
+#             else {
+#                 Get-DangerousPermissions -ServicePrincipalId $app.id
+#             }
+            
+#     }
+#     # Handle pagination (check for nextLink)
+#     while ($enterpriseApps.'@odata.nextLink') {
+#         Write-Host "Checking next page of API requests"
+#         $nextUrl = $enterpriseApps.'@odata.nextLink'
+#         $enterpriseApps = Invoke-RestMethod -Uri $nextUrl -Headers @{ "Authorization" = "Bearer $global:GraphAccessToken" } -Method Get
+
+#         foreach ($app in $enterpriseApps.value) {
+#             # Write-Host "Testing application $($app.appDisplayName)"
+#             if ($($app.appDisplayName)) {
+#                 Get-DangerousPermissions -ServicePrincipalId $app.id -appDisplayName $($app.appDisplayName)
+#             }
+#             else {
+#                 Get-DangerousPermissions -ServicePrincipalId $app.id
+#             }
+#         }
+#     }
+# }
+
 function Find-DangerousServicePrincipals {
+    Write-Host "Checking for required roles or permissions..."
+
+    # Define required roles
+    $requiredRoles = @(
+        "Application Administrator"
+    )
+
+    # Get current user's roles
+    $headers = @{ Authorization = "Bearer $global:GraphAccessToken" }
+
+    try {
+        $rolesResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/memberOf" -Headers $headers
+        $assignedRoles = $rolesResponse.value | Where-Object { $_.'@odata.type' -eq "#microsoft.graph.directoryRole" } | Select-Object -ExpandProperty displayName
+    } catch {
+        Write-Warning "Unable to retrieve role membership. You may not have sufficient permissions."
+        return
+    }
+
+    # Check for Global Administrator
+    if ($assignedRoles -contains "Global Administrator") {
+        Write-Host "✅ You are a Global Administrator. Skipping role checks." -ForegroundColor Green
+    } else {
+        $missingRoles = $requiredRoles | Where-Object { $_ -notin $assignedRoles }
+
+        if ($missingRoles.Count -gt 0) {
+            Write-Warning "⚠️ You are missing the following roles required to run this function:"
+            $missingRoles | ForEach-Object { Write-Host "- $_" }
+            return
+        } else {
+            Write-Host "✅ Required roles confirmed. Proceeding..." -ForegroundColor Green
+        }
+    }
+
     Write-Host "Will search for Dangerous Permissions"
+
     # Get all Enterprise Applications (Service Principals)
     $enterpriseAppsUrl = "https://graph.microsoft.com/v1.0/servicePrincipals?$filter=servicePrincipalType eq 'Application'"
-    $enterpriseApps = Invoke-RestMethod -Uri $enterpriseAppsUrl -Headers @{ "Authorization" = "Bearer $global:GraphAccessToken" } -Method Get
+    try {
+        $enterpriseApps = Invoke-RestMethod -Uri $enterpriseAppsUrl -Headers $headers -Method Get
+    } catch {
+        Write-Error "Failed to retrieve service principals: $_"
+        return
+    }
+
     Write-Host "Pulling all Enterprise Applications"
+
     # Output the results
     foreach ($app in $enterpriseApps.value) {
-            # Write-Host "Testing application $($app.appDisplayName)"
-            if ($($app.appDisplayName)) {
-                Get-DangerousPermissions -ServicePrincipalId $app.id -appDisplayName $($app.appDisplayName)
-            }
-            else {
-                Get-DangerousPermissions -ServicePrincipalId $app.id
-            }
-            
+        if ($app.appDisplayName) {
+            Get-DangerousPermissions -ServicePrincipalId $app.id -appDisplayName $app.appDisplayName
+        } else {
+            Get-DangerousPermissions -ServicePrincipalId $app.id
+        }
     }
+
     # Handle pagination (check for nextLink)
     while ($enterpriseApps.'@odata.nextLink') {
         Write-Host "Checking next page of API requests"
         $nextUrl = $enterpriseApps.'@odata.nextLink'
-        $enterpriseApps = Invoke-RestMethod -Uri $nextUrl -Headers @{ "Authorization" = "Bearer $global:GraphAccessToken" } -Method Get
+        try {
+            $enterpriseApps = Invoke-RestMethod -Uri $nextUrl -Headers $headers -Method Get
+        } catch {
+            Write-Error "Failed to retrieve next page of service principals: $_"
+            break
+        }
 
         foreach ($app in $enterpriseApps.value) {
-            # Write-Host "Testing application $($app.appDisplayName)"
-            if ($($app.appDisplayName)) {
-                Get-DangerousPermissions -ServicePrincipalId $app.id -appDisplayName $($app.appDisplayName)
-            }
-            else {
+            if ($app.appDisplayName) {
+                Get-DangerousPermissions -ServicePrincipalId $app.id -appDisplayName $app.appDisplayName
+            } else {
                 Get-DangerousPermissions -ServicePrincipalId $app.id
             }
         }
     }
 }
+
 
 # Internal function to get dangerous permissions for Service Principals (hidden from help)
 function Get-DangerousPermissions {
@@ -375,6 +554,9 @@ function Get-DangerousPermissions {
         [Parameter(Mandatory = $false)]
         [string]$appDisplayName
     )
+
+    # Capture the dangerous Service Principals
+    $dangerousSPs = @()
 
     # Define the dangerous AppRole IDs
     $appRoleIdToPermissionName = @{
@@ -413,50 +595,85 @@ function Get-DangerousPermissions {
             $permissionName = $appRoleIdToPermissionName[$appRoleId]
             # Write-Host "Testing $permissionName"
             Write-Host "[+] Service Principal $appDisplayName (SP ID: $ServicePrincipalId) has the dangerous permission: $permissionName" -ForegroundColor Red
+
+            $dangerousSPs += [PSCustomObject]@{
+                AppDisplayName      = $appDisplayName
+                ServicePrincipalId  = $ServicePrincipalId
+                DangerousPermissions = $permissionName
+            } 
+           # $dangerousSPs | Export-CSV -Path "$($global:ToolName)_DangerousServicePrincipals.csv" -NoTypeInformation -Append
         } 
     }
 }
 
-
+# Internal function to find privileged role assignments (hidden from help)
 function Find-PrivilegedRoleAssignments {
-    Write-Host "Searching in Privileged Role Assignments..."
-    $InterestingDirectoryRole = @{
-    "9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3" = "Application Administrator"
-    "158c047a-c907-4556-b7ef-446551a6b5f7" = "Cloud Application Administrator"
-    "9360feb5-f418-4baa-8175-e2a00bac4301" = "Directory Writers"
-    "62e90394-69f5-4237-9190-012177145e10" = "Global Administrator"
-    "fdd7a751-b60b-444a-984c-02652fe8fa1c" = "Groups Administrator"
-    "45d8d3c5-c802-45c6-b32a-1d70b5e1e86e" = "Identity Governance Administrator"
-    "8ac3fc64-6eca-42ea-9e69-59f4c7b60eb2" = "Hybrid Identity Administrator"
-    "3a2c62db-5318-420d-8d74-23affee5d9d5" = "Intune Administrator"
-    "b5a8dcf3-09d5-43a9-a639-8e29ef291470" = "Knowledge Administrator"
-    "4ba39ca4-527c-499a-b93d-d9b492c50246" = "Partner Tier1 Support"
-    "e00e864a-17c5-4a4b-9c06-f5b95a8d5bd8" = "Partner Tier2 Support"
-    "e8611ab8-c189-46e8-94e1-60213ab1f814" = "Privileged Role Administrator"
-    "fe930be7-5e62-47db-91af-98c3a49a38b1" = "User Administrator"
-    "11451d60-acb2-45eb-a7d6-43d0f0125c13" = "Windows 365 Administrator"
-    "c4e39bd9-1100-46d3-8c65-fb160da0071f" = "Authentication Administrator"
-    "b0f54661-2d74-4c50-afa3-1ec803f12efe" = "Billing administrator"
-    "b1be1c3e-b65d-4f19-8427-f6fa0d97feb9" = "Conditional Access administrator"
-    "29232cdf-9323-42fd-ade2-1d097af3e4de" = "Exchange administrator"
-    "729827e3-9c14-49f7-bb1b-9608f156bbb8" = "Helpdesk administrator"
-    "966707d0-3269-4727-9be2-8c3a10f19b9d" = "Password administrator"
-    "7be44c8a-adaf-4e2a-84d6-ab2649e08a13" = "Privileged authentication administrator"
-    "194ae4cb-b126-40b2-bd5b-6091b380977d" = "Security administrator"
-    "f28a1f50-f6e7-4571-818b-6a12f2af6b6c" = "SharePoint administrator"
+    Write-Host "Checking for required roles..."
+
+    $headers = @{ Authorization = "Bearer $global:GraphAccessToken" }
+
+    # Get current user's role memberships
+    try {
+        $rolesResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/memberOf" -Headers $headers
+        $assignedRoles = $rolesResponse.value | Where-Object { $_.'@odata.type' -eq "#microsoft.graph.directoryRole" } | Select-Object -ExpandProperty displayName
+    } catch {
+        Write-Warning "Unable to retrieve role membership. You may not have sufficient permissions."
+        return
     }
+
+    # Check for required roles
+    $requiredRoles = @("Privileged Role Administrator", "Global Administrator")
+    $hasRequiredRole = $assignedRoles | Where-Object { $requiredRoles -contains $_ }
+
+    if (-not $hasRequiredRole) {
+        Write-Warning "⚠️ You do not have the required roles to access privileged role assignments."
+        Write-Host "Required: Privileged Role Administrator or Global Administrator"
+        Write-Host "Assigned: $($assignedRoles -join ', ')"
+        return
+    }
+
+    Write-Host "✅ Required role confirmed. Proceeding with privileged role assignment scan..."
+
+    $InterestingDirectoryRole = @{
+        "9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3" = "Application Administrator"
+        "158c047a-c907-4556-b7ef-446551a6b5f7" = "Cloud Application Administrator"
+        "9360feb5-f418-4baa-8175-e2a00bac4301" = "Directory Writers"
+        "62e90394-69f5-4237-9190-012177145e10" = "Global Administrator"
+        "fdd7a751-b60b-444a-984c-02652fe8fa1c" = "Groups Administrator"
+        "45d8d3c5-c802-45c6-b32a-1d70b5e1e86e" = "Identity Governance Administrator"
+        "8ac3fc64-6eca-42ea-9e69-59f4c7b60eb2" = "Hybrid Identity Administrator"
+        "3a2c62db-5318-420d-8d74-23affee5d9d5" = "Intune Administrator"
+        "b5a8dcf3-09d5-43a9-a639-8e29ef291470" = "Knowledge Administrator"
+        "4ba39ca4-527c-499a-b93d-d9b492c50246" = "Partner Tier1 Support"
+        "e00e864a-17c5-4a4b-9c06-f5b95a8d5bd8" = "Partner Tier2 Support"
+        "e8611ab8-c189-46e8-94e1-60213ab1f814" = "Privileged Role Administrator"
+        "fe930be7-5e62-47db-91af-98c3a49a38b1" = "User Administrator"
+        "11451d60-acb2-45eb-a7d6-43d0f0125c13" = "Windows 365 Administrator"
+        "c4e39bd9-1100-46d3-8c65-fb160da0071f" = "Authentication Administrator"
+        "b0f54661-2d74-4c50-afa3-1ec803f12efe" = "Billing administrator"
+        "b1be1c3e-b65d-4f19-8427-f6fa0d97feb9" = "Conditional Access administrator"
+        "29232cdf-9323-42fd-ade2-1d097af3e4de" = "Exchange administrator"
+        "729827e3-9c14-49f7-bb1b-9608f156bbb8" = "Helpdesk administrator"
+        "966707d0-3269-4727-9be2-8c3a10f19b9d" = "Password administrator"
+        "7be44c8a-adaf-4e2a-84d6-ab2649e08a13" = "Privileged authentication administrator"
+        "194ae4cb-b126-40b2-bd5b-6091b380977d" = "Security administrator"
+        "f28a1f50-f6e7-4571-818b-6a12f2af6b6c" = "SharePoint administrator"
+    }
+
     # Fetch all role assignments
     $roleAssignmentsUrl = "https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments"
-    $roleAssignments = Invoke-RestMethod -Uri $roleAssignmentsUrl -Headers @{ "Authorization" = "Bearer $global:GraphAccessToken" } -Method Get
-
-    # Fix: Extract "value" property to get the actual assignments
-    $roleAssignments = $roleAssignments.value
+    try {
+        $roleAssignmentsResponse = Invoke-RestMethod -Uri $roleAssignmentsUrl -Headers $headers -Method Get
+        $roleAssignments = $roleAssignmentsResponse.value
+    } catch {
+        Write-Error "Failed to retrieve role assignments: $_"
+        return
+    }
 
     foreach ($assignment in $roleAssignments) {
         $roleId = $assignment.roleDefinitionId
         $principalId = $assignment.principalId
 
-        # Check if this role is in our list of interesting roles
         if ($InterestingDirectoryRole.ContainsKey($roleId)) {
             $roleName = $InterestingDirectoryRole[$roleId]
             Get-PrivilegedRoleAssignments -PrincipalId $principalId -RoleName $roleName
@@ -626,4 +843,3 @@ function Find-SubscriptionOwnersContributors {
         Write-Host "`n[-] No Service Principals or Managed Identities found with Owner/Contributor roles on Subscriptions." -ForegroundColor Red
     }
 }
-
