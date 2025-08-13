@@ -126,13 +126,13 @@ function Get-MicrosoftGraphToken {
                 return
             }
         }
-    
-        # Stop polling if the expiration time has been reached
-        if ($totalWaitTime -ge $expiresIn) {
-            Write-Host "Authentication window has expired. Please try again." -ForegroundColor Red
-            $continue = $false
-        }
+
+    # Stop polling if the expiration time has been reached
+    if ($totalWaitTime -ge $expiresIn) {
+        Write-Host "Authentication window has expired. Please try again." -ForegroundColor Red
+        $continue = $false
     }
+}
 }
 
 # Function to enumerate Service Principals and find dangerous permissions
@@ -190,7 +190,6 @@ function Enumerate {
     }
 }
 
-# Internal function to get Microsoft Graph token (hidden from help)
 function Get-MicrosoftGraphToken {
     param (
         [Parameter(Mandatory = $true)]
@@ -206,45 +205,56 @@ function Get-MicrosoftGraphToken {
     }
 
     # Request device code for Microsoft Graph
-    $deviceCodeResponse = Invoke-RestMethod -Uri $deviceCodeUrl -Method Post -ContentType "application/x-www-form-urlencoded" -Body $body
-    Write-Host "Please authenticate by visiting $($deviceCodeResponse.verification_uri) and entering the code: $($deviceCodeResponse.user_code)"
-    $interval = $deviceCodeResponse.interval  # Use the interval provided in the auth response
-    $expiresIn = $deviceCodeResponse.expires_in  # Get the expiration time from the auth response
+    try {
+        $deviceCodeResponse = Invoke-RestMethod -Uri $deviceCodeUrl -Method Post -ContentType "application/x-www-form-urlencoded" -Body $body
+        Write-Host "Please authenticate by visiting $($deviceCodeResponse.verification_uri) and entering the code: $($deviceCodeResponse.user_code)"
+    } catch {
+        Write-Error "Failed to initiate device code flow: $($_.Exception.Message)"
+        return
+    }
+
+    $interval = $deviceCodeResponse.interval
+    $expiresIn = $deviceCodeResponse.expires_in
     $totalWaitTime = 0
     $continue = $true
-    # Poll for Microsoft Graph token
     $tokenUrl = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
     $tokenBody = @{
-        grant_type    = "urn:ietf:params:oauth:grant-type:device_code"
-        client_id     = $psClientId
-        device_code   = $deviceCodeResponse.device_code
+        grant_type  = "urn:ietf:params:oauth:grant-type:device_code"
+        client_id   = $psClientId
+        device_code = $deviceCodeResponse.device_code
     }
 
     $graphTokenResponse = $null
     while ($continue -and $totalWaitTime -lt $expiresIn) {
-        $totalWaitTime += $interval
         Write-Host "Waiting for device auth... ($totalWaitTime seconds waited)"
         Start-Sleep -Seconds $interval
+        $totalWaitTime += $interval
 
         try {
             $graphTokenResponse = Invoke-RestMethod -Uri $tokenUrl -Method Post -ContentType "application/x-www-form-urlencoded" -Body $tokenBody
             if ($graphTokenResponse.access_token) {
                 $global:GraphAccessToken = $graphTokenResponse.access_token
-                Write-Host "Successfully authenticated for Microsoft Graph. GraphAccessToken parameter available globally."
-                $continue = $false  # Break the loop
-                break  # Ensure immediate exit
+                Write-Host "✅ Successfully authenticated for Microsoft Graph. GraphAccessToken is now available globally." -ForegroundColor Green
+                $continue = $false
+                break
             }
         } catch {
-            # This is normal flow, always returns 40x unless successful
-            $details = $_.ErrorDetails.Message | ConvertFrom-Json
-            $continue = $details.error -eq "authorization_pending"
-            
-            if (!$continue) {
-                # Not pending so this is a real error
-                Write-Error $details.error_description
+            try {
+                $details = $_.ErrorDetails.Message | ConvertFrom-Json
+                $continue = $details.error -eq "authorization_pending"
+                if (!$continue) {
+                    Write-Error $details.error_description
+                    return
+                }
+            } catch {
+                Write-Error "Unexpected error format: $($_.Exception.Message)"
                 return
             }
         }
+    }
+
+    if ($totalWaitTime -ge $expiresIn) {
+        Write-Host "❌ Authentication window has expired. Please try again." -ForegroundColor Red
     }
 }
 
@@ -703,4 +713,3 @@ function Find-SubscriptionOwnersContributors {
         Write-Host "`n[-] No Service Principals or Managed Identities found with Owner/Contributor roles on Subscriptions." -ForegroundColor Red
     }
 }
-
