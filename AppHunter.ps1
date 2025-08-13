@@ -164,7 +164,7 @@ function Enumerate {
         [string]$Type,
 
         [Parameter]
-        [bool]$ExportSP = $false
+        [switch]$ExportSP
     )
 
     switch ($Type) {
