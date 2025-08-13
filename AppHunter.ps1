@@ -13,7 +13,7 @@ function Show-Banner {
 | (_| | / / | |_| || |   |  __/                  | (_| || |_) || |_) || | | || |_| || | | || |_ |  __/| |
  \__,_|/___| \__,_||_|    \___|                   \__,_|| .__/ | .__/ |_| |_| \__,_||_| |_| \__| \___||_|
 
-  Azure AppHunter v1.0 by Nintendo && @nickvourd
+  Azure AppHunter v1.1 by Nintendo && @nickvourd && Thomas-Butterfield
 '@
     Write-Host $banner -ForegroundColor Cyan
     Write-Host "Welcome to AzureAppHunter!" -ForegroundColor Green
@@ -269,7 +269,8 @@ function Enumerate {
         [Parameter(Mandatory = $true)]
         [ValidateSet("ServicePrincipalsDangerousPermissions", "PrivilegedRoleAssignments", "SubscriptionOwnersContributors")]
         [string]$Type,
-        [Parameter(Mandatory = $false)]
+
+        [Parameter]
         [bool]$ExportCSV = $false
     )
 
@@ -809,3 +810,4 @@ function Find-SubscriptionOwnersContributors {
         Write-Host "`n[-] No Service Principals or Managed Identities found with Owner/Contributor roles on Subscriptions." -ForegroundColor Red
     }
 }
+
