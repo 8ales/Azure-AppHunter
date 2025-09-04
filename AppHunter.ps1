@@ -13,7 +13,7 @@ function Show-Banner {
 | (_| | / / | |_| || |   |  __/                  | (_| || |_) || |_) || | | || |_| || | | || |_ |  __/| |
  \__,_|/___| \__,_||_|    \___|                   \__,_|| .__/ | .__/ |_| |_| \__,_||_| |_| \__| \___||_|
 
-  Azure AppHunter v1.1 by Nintendo && @nickvourd && Thomas-Butterfield
+  Azure AppHunter v1.2 by Nintendo && @nickvourd && Thomas-Butterfield
 '@
     Write-Host $banner -ForegroundColor Cyan
     Write-Host "Welcome to AzureAppHunter!" -ForegroundColor Green
@@ -666,6 +666,10 @@ function Find-SubscriptionOwnersContributors {
     $subscriptionRoles = @{
         "8e3af657-a8ff-443c-a75c-2fe8c4bcb635" = "Owner"
         "b24988ac-6180-42a0-ab88-20f7382dd24c" = "Contributor"
+        "18d7d88d-d35e-4fb5-a5c3-7773c20a72d9" = "User Access Administrator"
+        "f58310d9-a9f6-439a-9e8d-f62e7b41a168" = "Role Based Access Control Administrator"
+        "a8889054-8d42-49c9-bc1c-52486c10e7cd" = "Reservations Administrator"
+        "92b92042-07d9-4307-87f7-36a593fc5850" = "Azure File Sync Administrator"
     }
 
     $results = @()
@@ -714,3 +718,5 @@ function Find-SubscriptionOwnersContributors {
         Write-Host "`n[-] No Service Principals or Managed Identities found with Owner/Contributor roles on Subscriptions." -ForegroundColor Red
     }
 }
+
+
