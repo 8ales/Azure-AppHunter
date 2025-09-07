@@ -13,7 +13,7 @@ function Show-Banner {
 | (_| | / / | |_| || |   |  __/                  | (_| || |_) || |_) || | | || |_| || | | || |_ |  __/| |
  \__,_|/___| \__,_||_|    \___|                   \__,_|| .__/ | .__/ |_| |_| \__,_||_| |_| \__| \___||_|
 
-  Azure AppHunter v1.2 by Nintendo && @nickvourd && Thomas-Butterfield
+  Azure AppHunter v1.3 by Nintendo && @nickvourd && Thomas-Butterfield
 '@
     Write-Host $banner -ForegroundColor Cyan
     Write-Host "Welcome to AzureAppHunter!" -ForegroundColor Green
@@ -68,8 +68,8 @@ function Authenticate {
         Get-ARMToken -TenantId $TenantId
     }
 }
-# Function to authenticate with Microsoft Graph (default behavior)
-# Function to authenticate with Microsoft Graph using device code flow
+
+# Function to authenticate with Microsoft Graph using device code flow (default behavior)
 function Get-MicrosoftGraphToken {
     param (
         [Parameter(Mandatory = $true)]
@@ -235,7 +235,7 @@ function Get-MicrosoftGraphToken {
             $graphTokenResponse = Invoke-RestMethod -Uri $tokenUrl -Method Post -ContentType "application/x-www-form-urlencoded" -Body $tokenBody
             if ($graphTokenResponse.access_token) {
                 $global:GraphAccessToken = $graphTokenResponse.access_token
-                Write-Host "✅ Successfully authenticated for Microsoft Graph. GraphAccessToken is now available globally." -ForegroundColor Green
+                Write-Host "Successfully authenticated for Microsoft Graph. GraphAccessToken is now available globally." -ForegroundColor Green
                 $continue = $false
                 break
             }
@@ -255,7 +255,7 @@ function Get-MicrosoftGraphToken {
     }
 
     if ($totalWaitTime -ge $expiresIn) {
-        Write-Host "❌ Authentication window has expired. Please try again." -ForegroundColor Red
+        Write-Host "Authentication window has expired. Please try again." -ForegroundColor Red
     }
 }
 
@@ -359,16 +359,16 @@ function Find-DangerousServicePrincipals {
 
     # Check for Global Administrator
     if ($assignedRoles -contains "Global Administrator") {
-        Write-Host "✅ You are a Global Administrator. Skipping role checks." -ForegroundColor Green
+        Write-Host "You are a Global Administrator. Skipping role checks." -ForegroundColor Green
     } else {
         $missingRoles = $requiredRoles | Where-Object { $_ -notin $assignedRoles }
 
         if ($missingRoles.Count -gt 0) {
-            Write-Warning "⚠️ You are missing the following roles required to run this function:"
+            Write-Warning "You are missing the following roles required to run this function:"
             $missingRoles | ForEach-Object { Write-Host "- $_" }
             return
         } else {
-            Write-Host "✅ Required roles confirmed. Proceeding..." -ForegroundColor Green
+            Write-Host "Required roles confirmed. Proceeding..." -ForegroundColor Green
         }
     }
 
@@ -497,13 +497,13 @@ function Find-PrivilegedRoleAssignments {
     $hasRequiredRole = $assignedRoles | Where-Object { $requiredRoles -contains $_ }
 
     if (-not $hasRequiredRole) {
-        Write-Warning "⚠️ You do not have the required roles to access privileged role assignments."
+        Write-Warning "You do not have the required roles to access privileged role assignments."
         Write-Host "Required: Privileged Role Administrator or Global Administrator"
         Write-Host "Assigned: $($assignedRoles -join ', ')"
         return
     }
 
-    Write-Host "✅ Required role confirmed. Proceeding with privileged role assignment scan..."
+    Write-Host "Required role confirmed. Proceeding with privileged role assignment scan..."
 
     $InterestingDirectoryRole = @{
         "9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3" = "Application Administrator"
@@ -601,7 +601,7 @@ function Get-AllPages {
         $response = Invoke-RestMethod -Uri $InitialUrl -Headers $Headers -Method Get -ErrorAction Stop
         $allResults += $response.value
     } catch {
-        Write-Host "❌ Error retrieving API data: $_" -ForegroundColor Red
+        Write-Host "Error retrieving API data: $_" -ForegroundColor Red
         return @()
     }
 
@@ -611,7 +611,7 @@ function Get-AllPages {
             $response = Invoke-RestMethod -Uri $response.'@odata.nextLink' -Headers $Headers -Method Get -ErrorAction Stop
             $allResults += $response.value
         } catch {
-            Write-Host "⚠️ Warning: Failed to fetch next page of API results." -ForegroundColor Yellow
+            Write-Host "Warning: Failed to fetch next page of API results." -ForegroundColor Yellow
             break
         }
     }
@@ -626,7 +626,7 @@ function Get-PrincipalDetails {
     )
 
     if (-not $Global:GraphAccessToken) {
-        Write-Host "❌ Graph API Token not found. Please run Get-MicrosoftGraphToken first." -ForegroundColor Red
+        Write-Host "Graph API Token not found. Please run Get-MicrosoftGraphToken first." -ForegroundColor Red
         return $null
     }
 
@@ -637,7 +637,7 @@ function Get-PrincipalDetails {
         $spDetails = Invoke-RestMethod -Uri $url -Headers $graphHeaders -Method Get -ErrorAction Stop
         return $spDetails
     } catch {
-        Write-Host "⚠️ Unable to retrieve details for Principal ID: $PrincipalId" -ForegroundColor Yellow
+        Write-Host "Unable to retrieve details for Principal ID: $PrincipalId" -ForegroundColor Yellow
         return $null
     }
 }
@@ -646,7 +646,7 @@ function Find-SubscriptionOwnersContributors {
     Write-Host "[*] Retrieving all Azure Subscriptions..." -ForegroundColor Cyan
 
     if (-not $Global:ARMToken) {
-        Write-Host "❌ ARM Token not found. Please run Get-ARMToken first." -ForegroundColor Red
+        Write-Host "ARM Token not found. Please run Get-ARMToken first." -ForegroundColor Red
         return
     }
 
@@ -656,13 +656,13 @@ function Find-SubscriptionOwnersContributors {
     try {
         $subscriptions = Invoke-RestMethod -Uri $subscriptionsUrl -Headers $headers -Method Get -ErrorAction Stop
     } catch {
-        Write-Host "❌ Failed to retrieve subscriptions: $_" -ForegroundColor Red
+        Write-Host "Failed to retrieve subscriptions: $_" -ForegroundColor Red
         return
     }
 
     $subscriptions = $subscriptions.value
 
-    # ✅ Subscription Roles (Only Owner & Contributor)
+    # Subscription Roles (Only Owner & Contributor)
     $subscriptionRoles = @{
         "8e3af657-a8ff-443c-a75c-2fe8c4bcb635" = "Owner"
         "b24988ac-6180-42a0-ab88-20f7382dd24c" = "Contributor"
@@ -718,5 +718,3 @@ function Find-SubscriptionOwnersContributors {
         Write-Host "`n[-] No Service Principals or Managed Identities found with Owner/Contributor roles on Subscriptions." -ForegroundColor Red
     }
 }
-
-
