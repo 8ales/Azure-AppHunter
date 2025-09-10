@@ -343,7 +343,7 @@ function Find-DangerousServicePrincipals {
 
     # Define required roles
     $requiredRoles = @(
-        "Application Administrator"
+        "Global Reader"
     )
 
     # Get current user's roles
@@ -493,12 +493,12 @@ function Find-PrivilegedRoleAssignments {
     }
 
     # Check for required roles
-    $requiredRoles = @("Privileged Role Administrator", "Global Administrator")
+    $requiredRoles = @("Global Reader")
     $hasRequiredRole = $assignedRoles | Where-Object { $requiredRoles -contains $_ }
 
     if (-not $hasRequiredRole) {
         Write-Warning "You do not have the required roles to access privileged role assignments."
-        Write-Host "Required: Privileged Role Administrator or Global Administrator"
+        Write-Host "Required: Global Reader"
         Write-Host "Assigned: $($assignedRoles -join ', ')"
         return
     }
@@ -718,3 +718,4 @@ function Find-SubscriptionOwnersContributors {
         Write-Host "`n[-] No Service Principals or Managed Identities found with Owner/Contributor roles on Subscriptions." -ForegroundColor Red
     }
 }
+
