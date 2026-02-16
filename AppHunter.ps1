@@ -2,6 +2,7 @@
 $global:GraphAccessToken = $null
 $global:ARMToken = $null
 $global:ToolName = "AzureAppHunter"
+$global:AuthMode = "Unknown"
 
 # Function to display a banner when the module is imported
 function Show-Banner {
@@ -44,11 +45,20 @@ The tenant ID to authenticate with.
 .PARAMETER UseARM
 A switch that indicates whether to authenticate with Azure Resource Manager (ARM).
 
+.PARAMETER ClientId
+Optional service principal application (client) ID for app-only authentication.
+
+.PARAMETER ClientSecret
+Optional service principal client secret for app-only authentication.
+
 .EXAMPLE
 Authenticate -TenantId 'your-tenant-id'
 
 .EXAMPLE
 Authenticate -TenantId 'your-tenant-id' -UseARM
+
+.EXAMPLE
+Authenticate -TenantId 'your-tenant-id' -ClientId 'your-app-id' -ClientSecret 'your-app-secret' -UseARM
 
 #>
 function Authenticate {
@@ -57,15 +67,76 @@ function Authenticate {
         [string]$TenantId,
 
         [Parameter(Mandatory = $false)]
-        [switch]$UseARM
+        [switch]$UseARM,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ClientId,
+
+        [Parameter(Mandatory = $false)]
+        [string]$ClientSecret
     )
 
-    # Authenticate with Microsoft Graph (default)
-    Get-MicrosoftGraphToken -TenantId $TenantId
+    if (($ClientId -and -not $ClientSecret) -or ($ClientSecret -and -not $ClientId)) {
+        Write-Host "For service principal authentication, provide both -ClientId and -ClientSecret." -ForegroundColor Red
+        return
+    }
 
-    # Optionally authenticate with ARM if the user provides the flag
-    if ($UseARM) {
-        Get-ARMToken -TenantId $TenantId
+    if ($ClientId -and $ClientSecret) {
+        # App-only auth (service principal)
+        $graphToken = Get-ClientCredentialsToken -TenantId $TenantId -ClientId $ClientId -ClientSecret $ClientSecret -Scope "https://graph.microsoft.com/.default"
+        if (-not $graphToken) { return }
+        $global:GraphAccessToken = $graphToken
+        $global:AuthMode = "Application"
+        Write-Host "Successfully authenticated for Microsoft Graph using service principal credentials." -ForegroundColor Green
+
+        if ($UseARM) {
+            $armToken = Get-ClientCredentialsToken -TenantId $TenantId -ClientId $ClientId -ClientSecret $ClientSecret -Scope "https://management.azure.com/.default"
+            if (-not $armToken) { return }
+            $global:ARMToken = $armToken
+            Write-Host "Successfully authenticated for Azure ARM using service principal credentials." -ForegroundColor Green
+        }
+    }
+    else {
+        # Delegated device code auth (default)
+        Get-MicrosoftGraphToken -TenantId $TenantId
+        if ($global:GraphAccessToken) {
+            $global:AuthMode = "Delegated"
+        }
+
+        # Optionally authenticate with ARM if the user provides the flag
+        if ($UseARM) {
+            Get-ARMToken -TenantId $TenantId
+        }
+    }
+}
+
+function Get-ClientCredentialsToken {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$TenantId,
+        [Parameter(Mandatory = $true)]
+        [string]$ClientId,
+        [Parameter(Mandatory = $true)]
+        [string]$ClientSecret,
+        [Parameter(Mandatory = $true)]
+        [string]$Scope
+    )
+
+    $tokenUrl = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
+    $tokenBody = @{
+        client_id     = $ClientId
+        client_secret = $ClientSecret
+        grant_type    = "client_credentials"
+        scope         = $Scope
+    }
+
+    try {
+        $response = Invoke-RestMethod -Method Post -Uri $tokenUrl -ContentType "application/x-www-form-urlencoded" -Body $tokenBody -ErrorAction Stop
+        return $response.access_token
+    }
+    catch {
+        Write-Error "Service principal authentication failed for scope '$Scope': $($_.Exception.Message)"
+        return $null
     }
 }
 
@@ -114,7 +185,7 @@ function Enumerate {
         "SubscriptionOwnersContributors" {
             Write-Host "[*] Enumerating Subscription Owners & Contributors (SPs & MIs Only)..." -ForegroundColor Cyan
             if (-not $Global:ARMToken) {
-                Write-Host "Authentication Required: Please run 'Authenticate -TenantId your-tenant-id -UseARM' before using this enumeration." -ForegroundColor Yellow
+                Write-Host "Authentication Required: Please run 'Authenticate -TenantId your-tenant-id -UseARM' OR service principal auth with -ClientId/-ClientSecret and -UseARM before using this enumeration." -ForegroundColor Yellow
                 return
             }
             Find-SubscriptionOwnersContributors
@@ -275,35 +346,39 @@ function Get-ARMToken {
 function Find-DangerousServicePrincipals {
     Write-Host "Checking for required roles or permissions..."
 
-    # Define required roles
-    $requiredRoles = @(
-        "Global Reader"
-    )
-
-    # Get current user's roles
     $headers = @{ Authorization = "Bearer $global:GraphAccessToken" }
 
-    try {
-        $rolesResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/memberOf" -Headers $headers
-        $assignedRoles = $rolesResponse.value | Where-Object { $_.'@odata.type' -eq "#microsoft.graph.directoryRole" } | Select-Object -ExpandProperty displayName
-    } catch {
-        Write-Warning "Unable to retrieve role membership. You may not have sufficient permissions."
-        return
-    }
+    if ($global:AuthMode -ne "Application") {
+        # Define required roles for delegated authentication mode
+        $requiredRoles = @(
+            "Global Reader"
+        )
 
-    # Check for Global Administrator
-    if ($assignedRoles -contains "Global Administrator") {
-        Write-Host "You are a Global Administrator. Skipping role checks." -ForegroundColor Green
-    } else {
-        $missingRoles = $requiredRoles | Where-Object { $_ -notin $assignedRoles }
-
-        if ($missingRoles.Count -gt 0) {
-            Write-Warning "You are missing the following roles required to run this function:"
-            $missingRoles | ForEach-Object { Write-Host "- $_" }
+        # Get current user's roles
+        try {
+            $rolesResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/memberOf" -Headers $headers
+            $assignedRoles = $rolesResponse.value | Where-Object { $_.'@odata.type' -eq "#microsoft.graph.directoryRole" } | Select-Object -ExpandProperty displayName
+        } catch {
+            Write-Warning "Unable to retrieve role membership. You may not have sufficient permissions."
             return
-        } else {
-            Write-Host "Required roles confirmed. Proceeding..." -ForegroundColor Green
         }
+
+        # Check for Global Administrator
+        if ($assignedRoles -contains "Global Administrator") {
+            Write-Host "You are a Global Administrator. Skipping role checks." -ForegroundColor Green
+        } else {
+            $missingRoles = $requiredRoles | Where-Object { $_ -notin $assignedRoles }
+
+            if ($missingRoles.Count -gt 0) {
+                Write-Warning "You are missing the following roles required to run this function:"
+                $missingRoles | ForEach-Object { Write-Host "- $_" }
+                return
+            } else {
+                Write-Host "Required roles confirmed. Proceeding..." -ForegroundColor Green
+            }
+        }
+    } else {
+        Write-Host "Application authentication mode detected. Skipping /me role membership validation." -ForegroundColor Yellow
     }
 
     Write-Host "Will search for Dangerous Permissions"
@@ -417,27 +492,31 @@ function Find-PrivilegedRoleAssignments {
 
     $headers = @{ Authorization = "Bearer $global:GraphAccessToken" }
 
-    # Get current user's role memberships
-    try {
-        $rolesResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/memberOf" -Headers $headers
-        $assignedRoles = $rolesResponse.value | Where-Object { $_.'@odata.type' -eq "#microsoft.graph.directoryRole" } | Select-Object -ExpandProperty displayName
-    } catch {
-        Write-Warning "Unable to retrieve role membership. You may not have sufficient permissions."
-        return
+    if ($global:AuthMode -ne "Application") {
+        # Get current user's role memberships
+        try {
+            $rolesResponse = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me/memberOf" -Headers $headers
+            $assignedRoles = $rolesResponse.value | Where-Object { $_.'@odata.type' -eq "#microsoft.graph.directoryRole" } | Select-Object -ExpandProperty displayName
+        } catch {
+            Write-Warning "Unable to retrieve role membership. You may not have sufficient permissions."
+            return
+        }
+
+        # Check for required roles
+        $requiredRoles = @("Global Reader")
+        $hasRequiredRole = $assignedRoles | Where-Object { $requiredRoles -contains $_ }
+
+        if (-not $hasRequiredRole) {
+            Write-Warning "You do not have the required roles to access privileged role assignments."
+            Write-Host "Required: Global Reader"
+            Write-Host "Assigned: $($assignedRoles -join ', ')"
+            return
+        }
+
+        Write-Host "Required role confirmed. Proceeding with privileged role assignment scan..."
+    } else {
+        Write-Host "Application authentication mode detected. Skipping /me role membership validation." -ForegroundColor Yellow
     }
-
-    # Check for required roles
-    $requiredRoles = @("Global Reader")
-    $hasRequiredRole = $assignedRoles | Where-Object { $requiredRoles -contains $_ }
-
-    if (-not $hasRequiredRole) {
-        Write-Warning "You do not have the required roles to access privileged role assignments."
-        Write-Host "Required: Global Reader"
-        Write-Host "Assigned: $($assignedRoles -join ', ')"
-        return
-    }
-
-    Write-Host "Required role confirmed. Proceeding with privileged role assignment scan..."
 
     $InterestingDirectoryRole = @{
         "9b895d92-2cd3-44c7-9d02-a6ac2d5ea5c3" = "Application Administrator"
@@ -699,4 +778,3 @@ function Find-SubscriptionOwnersContributors {
         return @()
     }
 }
-

@@ -38,6 +38,9 @@ cd Azure-AppHunter
 # Authenticate with Microsoft Graph (and optionally ARM)
 Authenticate -TenantId '<your-tenant-id>' -UseARM
 
+# Authenticate with a Service Principal (Graph + ARM)
+Authenticate -TenantId '<your-tenant-id>' -ClientId '<app-id>' -ClientSecret '<app-secret>' -UseARM
+
 # Enumerate Service Principals with dangerous permissions
 Enumerate -Type ServicePrincipalsDangerousPermissions
 
