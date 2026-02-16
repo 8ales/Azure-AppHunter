@@ -69,72 +69,6 @@ function Authenticate {
     }
 }
 
-# Function to authenticate with Microsoft Graph using device code flow (default behavior)
-function Get-MicrosoftGraphToken {
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$TenantId
-    )
-
-    $psClientId = "1950a258-227b-4e31-a9cf-717495945fc2"  # PowerShell App Client ID for Microsoft Graph
-    $deviceCodeUrl = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/devicecode"
-    $graphScope = "https://graph.microsoft.com/.default"
-    $body = @{
-        client_id = $psClientId
-        scope     = $graphScope
-    }
-
-    # Request device code for Microsoft Graph
-    try {
-        $authResponse = Invoke-RestMethod -UseBasicParsing -Method Post -Uri $deviceCodeUrl -ContentType "application/x-www-form-urlencoded" -Body $body -ErrorAction SilentlyContinue
-        Write-Host "Please authenticate by visiting $($authResponse.verification_uri) and entering the code: $($authResponse.user_code)"
-    } catch {
-        Write-Verbose ($_.Exception.Message)
-        throw $_.Exception.Message
-    }
-
-    # Get the polling interval and expiration time from the response
-    $interval = $authResponse.interval
-    $expiresIn = $authResponse.expires_in
-
-    # Set up the token request body for polling
-    $tokenUrl = "https://login.microsoftonline.com/$TenantId/oauth2/v2.0/token"
-    $tokenBody = @{
-        client_id   = $psClientId
-        grant_type  = "urn:ietf:params:oauth:grant-type:device_code"
-        device_code = $authResponse.device_code
-    }
-
-    $graphTokenResponse = $null
-    $totalWaitTime = 0
-    $continue = $true
-    # Polling loop: keep requesting the token until the user authenticates or the token request expires
-    while ($continue -and $totalWaitTime -lt $expiresIn) {
-    try {
-        # Poll for the token using the baseline logic
-        $graphTokenResponse = Invoke-RestMethod -Method Post -Uri $tokenUrl -ContentType "application/x-www-form-urlencoded" -Body $tokenBody -ErrorAction Stop
-
-    } catch {
-            # This is normal flow, always returns 40x unless successful
-            $details = $_.ErrorDetails.Message | ConvertFrom-Json
-            $continue = $details.error -eq "authorization_pending"
-            #Write-Output $details.error
-
-            if (!$continue) {
-                # Not pending so this is a real error
-                #Write-Error $details.error_description
-                return
-            }
-        }
-
-    # Stop polling if the expiration time has been reached
-    if ($totalWaitTime -ge $expiresIn) {
-        Write-Host "Authentication window has expired. Please try again." -ForegroundColor Red
-        $continue = $false
-    }
-}
-}
-
 # Function to enumerate Service Principals and find dangerous permissions
 <#
 .SYNOPSIS
@@ -588,6 +522,7 @@ function Get-PrivilegedRoleAssignments {
 }
 
 
+
 function Get-AllPages {
     param (
         [Parameter(Mandatory = $true)]
@@ -597,21 +532,30 @@ function Get-AllPages {
     )
 
     $allResults = @()
-    try {
-        $response = Invoke-RestMethod -Uri $InitialUrl -Headers $Headers -Method Get -ErrorAction Stop
-        $allResults += $response.value
-    } catch {
-        Write-Host "Error retrieving API data: $_" -ForegroundColor Red
-        return @()
-    }
+    $nextUrl = $InitialUrl
 
-    while ($response.'@odata.nextLink') {
-        Write-Host "🔄 Fetching next page of API results..." -ForegroundColor Yellow
+    while ($nextUrl) {
         try {
-            $response = Invoke-RestMethod -Uri $response.'@odata.nextLink' -Headers $Headers -Method Get -ErrorAction Stop
-            $allResults += $response.value
-        } catch {
-            Write-Host "Warning: Failed to fetch next page of API results." -ForegroundColor Yellow
+            $response = Invoke-RestMethod -Uri $nextUrl -Headers $Headers -Method Get -ErrorAction Stop
+            if ($response.value) {
+                $allResults += $response.value
+            }
+
+            # Handle both Graph and ARM pagination styles
+            if ($response.PSObject.Properties.Name -contains '@odata.nextLink' -and $response.'@odata.nextLink') {
+                $nextUrl = $response.'@odata.nextLink'
+                Write-Host "🔄 Fetching next page of API results..." -ForegroundColor Yellow
+            }
+            elseif ($response.PSObject.Properties.Name -contains 'nextLink' -and $response.nextLink) {
+                $nextUrl = $response.nextLink
+                Write-Host "🔄 Fetching next page of API results..." -ForegroundColor Yellow
+            }
+            else {
+                $nextUrl = $null
+            }
+        }
+        catch {
+            Write-Host "Error retrieving API data: $_" -ForegroundColor Red
             break
         }
     }
@@ -642,6 +586,7 @@ function Get-PrincipalDetails {
     }
 }
 
+
 function Find-SubscriptionOwnersContributors {
     Write-Host "[*] Retrieving all Azure Subscriptions..." -ForegroundColor Cyan
 
@@ -653,16 +598,13 @@ function Find-SubscriptionOwnersContributors {
     $subscriptionsUrl = "https://management.azure.com/subscriptions?api-version=2020-01-01"
     $headers = @{ "Authorization" = "Bearer $Global:ARMToken" }
 
-    try {
-        $subscriptions = Invoke-RestMethod -Uri $subscriptionsUrl -Headers $headers -Method Get -ErrorAction Stop
-    } catch {
-        Write-Host "Failed to retrieve subscriptions: $_" -ForegroundColor Red
+    $subscriptions = Get-AllPages -InitialUrl $subscriptionsUrl -Headers $headers
+    if (-not $subscriptions -or $subscriptions.Count -eq 0) {
+        Write-Host "Failed to retrieve subscriptions or no subscriptions found." -ForegroundColor Red
         return
     }
 
-    $subscriptions = $subscriptions.value
-
-    # Subscription Roles (Only Owner & Contributor)
+    # Privileged subscription roles
     $subscriptionRoles = @{
         "8e3af657-a8ff-443c-a75c-2fe8c4bcb635" = "Owner"
         "b24988ac-6180-42a0-ab88-20f7382dd24c" = "Contributor"
@@ -677,45 +619,84 @@ function Find-SubscriptionOwnersContributors {
     foreach ($subscription in $subscriptions) {
         $subscriptionId = $subscription.subscriptionId
         $subscriptionName = $subscription.displayName
+        if (-not $subscriptionId) { continue }
+
         Write-Host "[*] Checking Subscription: $subscriptionName ($subscriptionId)" -ForegroundColor Yellow
 
         $roleAssignmentsUrl = "https://management.azure.com/subscriptions/$subscriptionId/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01"
         $roleAssignments = Get-AllPages -InitialUrl $roleAssignmentsUrl -Headers $headers
 
         foreach ($assignment in $roleAssignments) {
-            $roleId = $assignment.properties.roleDefinitionId -replace '.*/', ''  # Extract GUID
+            $roleId = $assignment.properties.roleDefinitionId -replace '.*/', ''
             $principalId = $assignment.properties.principalId
-            $principalType = $assignment.properties.principalType  # Can be ServicePrincipal, ManagedIdentity, User, Group
+            $principalType = $assignment.properties.principalType
+            $assignmentScope = [string]$assignment.properties.scope
 
-            # Include only SPs and MIs
-            if ($principalType -eq "ServicePrincipal" -or $principalType -eq "ManagedIdentity") {
-                if ($null -ne $roleId -and $subscriptionRoles.ContainsKey($roleId)) {
-                    $roleName = $subscriptionRoles[$roleId]
+            # Include SPs/MIs and privileged role IDs
+            if (($principalType -eq "ServicePrincipal" -or $principalType -eq "ManagedIdentity") -and
+                $null -ne $roleId -and $subscriptionRoles.ContainsKey($roleId)) {
 
-                    # Ensure Principal Details are Retrieved
-                    $principalDetails = Get-PrincipalDetails -PrincipalId $principalId
-                    if ($principalDetails) {
-                        # Determine if it's a Managed Identity or standard Service Principal
-                        $spType = $principalDetails.servicePrincipalType
-                        $principalLabel = if ($spType -eq "ManagedIdentity") { "(MI)" } else { "(SP)" }
-                        $formattedPrincipalName = "$($principalDetails.displayName) $principalLabel"
+                $roleName = $subscriptionRoles[$roleId]
 
-                        $results += [PSCustomObject]@{
-                            SubscriptionName  = $subscriptionName
-                            PrincipalName     = $formattedPrincipalName
-                            Role              = $roleName
-                        }
-                    }
+                # Scope classification
+                $scopeType = "Unknown"
+                if ($assignmentScope -eq "/subscriptions/$subscriptionId") {
+                    $scopeType = "Subscription"
+                }
+                elseif ($assignmentScope -like "/subscriptions/$subscriptionId/*") {
+                    $scopeType = "Child"
+                }
+                elseif ($assignmentScope -like "/providers/Microsoft.Management/managementGroups/*" -or $assignmentScope -eq "/") {
+                    $scopeType = "InheritedAboveSubscription"
+                }
+                elseif ($assignmentScope -and ($assignmentScope -notlike "/subscriptions/$subscriptionId*")) {
+                    $scopeType = "InheritedAboveSubscription"
+                }
+
+                $principalDetails = Get-PrincipalDetails -PrincipalId $principalId
+                $principalResolution = "Resolved"
+
+                if ($principalDetails) {
+                    $spType = $principalDetails.servicePrincipalType
+                    $principalLabel = if ($spType -eq "ManagedIdentity") { "(MI)" } else { "(SP)" }
+                    $formattedPrincipalName = "$($principalDetails.displayName) $principalLabel"
+                }
+                else {
+                    $principalResolution = "Unresolved"
+                    $fallbackLabel = if ($principalType -eq "ManagedIdentity") { "(MI)" } else { "(SP)" }
+                    $formattedPrincipalName = "<unresolved:$principalId> $fallbackLabel"
+                }
+
+                $results += [PSCustomObject]@{
+                    SubscriptionName   = $subscriptionName
+                    PrincipalName      = $formattedPrincipalName
+                    PrincipalId        = $principalId
+                    PrincipalType      = $principalType
+                    PrincipalResolution= $principalResolution
+                    Role               = $roleName
+                    AssignmentScope    = $assignmentScope
+                    ScopeType          = $scopeType
                 }
             }
         }
     }
 
     if ($results.Count -gt 0) {
-        Write-Host "`n[+] Found the following SPs & MIs with Owner or Contributor roles on Subscriptions:" -ForegroundColor Green
-        $results | Format-Table -Property SubscriptionName, PrincipalName, Role -AutoSize
-    } else {
-        Write-Host "`n[-] No Service Principals or Managed Identities found with Owner/Contributor roles on Subscriptions." -ForegroundColor Red
+        Write-Host "`n[+] Found SPs & MIs with privileged roles across subscription, child, and inherited scopes:" -ForegroundColor Green
+
+        $finalResults = $results |
+            Sort-Object SubscriptionName, PrincipalId, Role, ScopeType, AssignmentScope -Unique
+
+        # Render to host, but keep clean object output for callers/UI integrations.
+        $finalResults |
+            Format-Table -Property SubscriptionName, PrincipalName, PrincipalId, PrincipalType, PrincipalResolution, Role, ScopeType, AssignmentScope -Wrap -AutoSize |
+            Out-Host
+
+        return $finalResults
+    }
+    else {
+        Write-Host "`n[-] No Service Principals or Managed Identities found with targeted privileged roles." -ForegroundColor Red
+        return @()
     }
 }
 

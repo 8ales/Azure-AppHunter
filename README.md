@@ -10,7 +10,7 @@
 
 - 📌 **Enumerate Dangerous Microsoft Graph Permissions** on Service Principals  
 - 🧠 Detect **privileged role assignments** like Global Administrator or App Administrator  
-- 🔐 Discover **Azure Subscriptions** where SPs or Managed Identities have **Owner/Contributor** roles  
+- 🔐 Discover SPs or Managed Identities with privileged Azure role assignments across **subscription**, **child**, and **inherited** scopes  
 - 📱 **Device Code Authentication** for Microsoft Graph and Azure ARM APIs  
 - 🧭 Minimal dependencies and easy to integrate into your automation or red teaming workflows
 
@@ -44,5 +44,5 @@ Enumerate -Type ServicePrincipalsDangerousPermissions
 # Enumerate privileged role assignments (e.g., App Admin, Global Admin)
 Enumerate -Type PrivilegedRoleAssignments
 
-# Identify SPs or MIs with Owner/Contributor access on subscriptions
+# Identify SPs or MIs with privileged role assignments and explicit scope classification (Subscription/Child/Inherited)
 Enumerate -Type SubscriptionOwnersContributors
