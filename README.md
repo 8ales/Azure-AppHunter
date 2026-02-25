@@ -49,3 +49,6 @@ Enumerate -Type PrivilegedRoleAssignments
 
 # Identify SPs or MIs with privileged role assignments and explicit scope classification (Subscription/Child/Inherited)
 Enumerate -Type SubscriptionOwnersContributors
+
+# Identify SPs or MIs with dangerous subscription permissions (includes Key Vault secret read/list signals)
+Enumerate -Type SubscriptionDangerousPermissions

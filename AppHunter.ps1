@@ -143,29 +143,32 @@ function Get-ClientCredentialsToken {
 # Function to enumerate Service Principals and find dangerous permissions
 <#
 .SYNOPSIS
-Enumerates Service Principals for dangerous permissions, Role Assignments for privileged roles, or Subscription Owners & Contributors.
+Enumerates Service Principals for dangerous permissions, Role Assignments for privileged roles, Subscription Owners & Contributors, or Subscription dangerous permissions for SPs/MIs.
 
 .DESCRIPTION
 This function allows enumeration of:
 1. Service Principals with dangerous permissions (Find-DangerousServicePrincipals)
 2. Role Assignments with privileged roles (Find-PrivilegedRoleAssignments)
 3. Subscription Owners & Contributors (Find-SubscriptionOwnersContributors)
+4. Subscription dangerous permissions for SPs/MIs (Find-SubscriptionDangerousPermissions)
 
 .PARAMETER Type
 Specify "ServicePrincipalsDangerousPermissions" to enumerate Service Principals with dangerous permissions.
 Specify "PrivilegedRoleAssignments" to enumerate Role Assignments with privileged roles.
 Specify "SubscriptionOwnersContributors" to enumerate Subscription Owners & Contributors (SPs & MIs Only).
+Specify "SubscriptionDangerousPermissions" to enumerate dangerous subscription role permissions for SPs & MIs (including Key Vault secret read/list signals).
 
 .EXAMPLE
 Enumerate -Type ServicePrincipalsDangerousPermissions
 Enumerate -Type ServicePrincipalsDangerousPermissions -ExportSP
 Enumerate -Type PrivilegedRoleAssignments
 Enumerate -Type SubscriptionOwnersContributors
+Enumerate -Type SubscriptionDangerousPermissions
 #>
 function Enumerate {
     param (
         [Parameter(Mandatory = $true)]
-        [ValidateSet("ServicePrincipalsDangerousPermissions", "PrivilegedRoleAssignments", "SubscriptionOwnersContributors")]
+        [ValidateSet("ServicePrincipalsDangerousPermissions", "PrivilegedRoleAssignments", "SubscriptionOwnersContributors", "SubscriptionDangerousPermissions")]
         [string]$Type,
 
         [Parameter(Mandatory = $false)]
@@ -190,8 +193,16 @@ function Enumerate {
             }
             Find-SubscriptionOwnersContributors
         }
+        "SubscriptionDangerousPermissions" {
+            Write-Host "[*] Enumerating dangerous subscription permissions (SPs & MIs Only)..." -ForegroundColor Cyan
+            if (-not $Global:ARMToken) {
+                Write-Host "Authentication Required: Please run 'Authenticate -TenantId your-tenant-id -UseARM' OR service principal auth with -ClientId/-ClientSecret and -UseARM before using this enumeration." -ForegroundColor Yellow
+                return
+            }
+            Find-SubscriptionDangerousPermissions
+        }
         default {
-            Write-Host "[-] Invalid option. Please use 'ServicePrincipalsDangerousPermissions', 'PrivilegedRoleAssignments', or 'SubscriptionOwnersContributors'." -ForegroundColor Red
+            Write-Host "[-] Invalid option. Please use 'ServicePrincipalsDangerousPermissions', 'PrivilegedRoleAssignments', 'SubscriptionOwnersContributors', or 'SubscriptionDangerousPermissions'." -ForegroundColor Red
         }
     }
 }
@@ -775,6 +786,181 @@ function Find-SubscriptionOwnersContributors {
     }
     else {
         Write-Host "`n[-] No Service Principals or Managed Identities found with targeted privileged roles." -ForegroundColor Red
+        return @()
+    }
+}
+
+
+function Find-SubscriptionDangerousPermissions {
+    Write-Host "[*] Retrieving all Azure Subscriptions for dangerous permission analysis..." -ForegroundColor Cyan
+
+    if (-not $Global:ARMToken) {
+        Write-Host "ARM Token not found. Please run Authenticate -UseARM first." -ForegroundColor Red
+        return
+    }
+
+    if (-not $Global:GraphAccessToken) {
+        Write-Host "[!] Graph token not found. Principal names may be unresolved. Run Authenticate with Graph for enriched output." -ForegroundColor Yellow
+    }
+
+    $headers = @{ "Authorization" = "Bearer $Global:ARMToken" }
+    $subscriptionsUrl = "https://management.azure.com/subscriptions?api-version=2020-01-01"
+    $subscriptions = Get-AllPages -InitialUrl $subscriptionsUrl -Headers $headers
+
+    if (-not $subscriptions -or $subscriptions.Count -eq 0) {
+        Write-Host "Failed to retrieve subscriptions or no subscriptions found." -ForegroundColor Red
+        return @()
+    }
+
+    $dangerousRoleNames = @(
+        "Owner",
+        "Contributor",
+        "User Access Administrator",
+        "Role Based Access Control Administrator",
+        "Key Vault Administrator",
+        "Key Vault Secrets Officer",
+        "Key Vault Secrets User"
+    )
+
+    $dangerousActionPatterns = @(
+        "*",
+        "Microsoft.Authorization/*/write",
+        "Microsoft.Authorization/roleAssignments/write",
+        "Microsoft.Authorization/roleAssignments/delete",
+        "Microsoft.KeyVault/*",
+        "Microsoft.KeyVault/vaults/*",
+        "Microsoft.KeyVault/vaults/secrets/*"
+    )
+
+    $dangerousDataActionPatterns = @(
+        "Microsoft.KeyVault/vaults/secrets/*",
+        "Microsoft.KeyVault/vaults/secrets/read",
+        "Microsoft.KeyVault/vaults/secrets/list/action",
+        "Microsoft.KeyVault/vaults/secrets/getSecret/action"
+    )
+
+    $roleDefinitionCache = @{}
+    $results = @()
+
+    foreach ($subscription in $subscriptions) {
+        $subscriptionId = $subscription.subscriptionId
+        $subscriptionName = $subscription.displayName
+        if (-not $subscriptionId) { continue }
+
+        Write-Host "[*] Checking Subscription for dangerous permissions: $subscriptionName ($subscriptionId)" -ForegroundColor Yellow
+
+        $roleAssignmentsUrl = "https://management.azure.com/subscriptions/$subscriptionId/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01"
+        $roleAssignments = Get-AllPages -InitialUrl $roleAssignmentsUrl -Headers $headers
+
+        foreach ($assignment in $roleAssignments) {
+            $principalType = $assignment.properties.principalType
+            if ($principalType -ne "ServicePrincipal" -and $principalType -ne "ManagedIdentity") { continue }
+
+            $principalId = $assignment.properties.principalId
+            $assignmentScope = [string]$assignment.properties.scope
+            $roleDefinitionId = [string]$assignment.properties.roleDefinitionId
+            if (-not $roleDefinitionId) { continue }
+
+            if (-not $roleDefinitionCache.ContainsKey($roleDefinitionId)) {
+                $rdUrl = "https://management.azure.com$roleDefinitionId?api-version=2022-04-01"
+                try {
+                    $roleDefinitionCache[$roleDefinitionId] = Invoke-RestMethod -Uri $rdUrl -Headers $headers -Method Get -ErrorAction Stop
+                } catch {
+                    Write-Host "[-] Failed to resolve role definition: $roleDefinitionId" -ForegroundColor DarkYellow
+                    continue
+                }
+            }
+
+            $roleDef = $roleDefinitionCache[$roleDefinitionId]
+            if (-not $roleDef) { continue }
+
+            $roleName = [string]$roleDef.properties.roleName
+            $permissions = @($roleDef.properties.permissions)
+
+            $signals = @()
+            if ($dangerousRoleNames -contains $roleName) {
+                $signals += "DangerousRoleName:$roleName"
+            }
+
+            foreach ($perm in $permissions) {
+                foreach ($action in @($perm.actions)) {
+                    if (-not $action) { continue }
+                    foreach ($pattern in $dangerousActionPatterns) {
+                        if ($action -like $pattern) {
+                            $signals += "Action:$action"
+                            break
+                        }
+                    }
+                }
+
+                foreach ($dataAction in @($perm.dataActions)) {
+                    if (-not $dataAction) { continue }
+                    foreach ($pattern in $dangerousDataActionPatterns) {
+                        if ($dataAction -like $pattern) {
+                            $signals += "DataAction:$dataAction"
+                            break
+                        }
+                    }
+                }
+            }
+
+            $signals = $signals | Select-Object -Unique
+            if (-not $signals -or $signals.Count -eq 0) { continue }
+
+            $scopeType = "Unknown"
+            if ($assignmentScope -eq "/subscriptions/$subscriptionId") {
+                $scopeType = "Subscription"
+            }
+            elseif ($assignmentScope -like "/subscriptions/$subscriptionId/*") {
+                $scopeType = "Child"
+            }
+            elseif ($assignmentScope -like "/providers/Microsoft.Management/managementGroups/*" -or $assignmentScope -eq "/") {
+                $scopeType = "InheritedAboveSubscription"
+            }
+            elseif ($assignmentScope -and ($assignmentScope -notlike "/subscriptions/$subscriptionId*")) {
+                $scopeType = "InheritedAboveSubscription"
+            }
+
+            $principalResolution = "Unresolved"
+            $formattedPrincipalName = "<unresolved:$principalId>"
+            $spType = $principalType
+
+            if ($Global:GraphAccessToken) {
+                $principalDetails = Get-PrincipalDetails -PrincipalId $principalId
+                if ($principalDetails) {
+                    $spType = if ($principalDetails.servicePrincipalType) { $principalDetails.servicePrincipalType } else { $principalType }
+                    $suffix = if ($spType -eq "ManagedIdentity" -or $principalType -eq "ManagedIdentity") { "(MI)" } else { "(SP)" }
+                    $formattedPrincipalName = "$($principalDetails.displayName) $suffix"
+                    $principalResolution = "Resolved"
+                }
+            }
+
+            $results += [PSCustomObject]@{
+                SubscriptionName     = $subscriptionName
+                PrincipalName        = $formattedPrincipalName
+                PrincipalId          = $principalId
+                PrincipalType        = $principalType
+                ServicePrincipalType = $spType
+                PrincipalResolution  = $principalResolution
+                RoleName             = $roleName
+                DangerousSignals     = ($signals -join "; ")
+                AssignmentScope      = $assignmentScope
+                ScopeType            = $scopeType
+                RoleDefinitionId     = $roleDefinitionId
+            }
+        }
+    }
+
+    if ($results.Count -gt 0) {
+        Write-Host "`n[+] Found SPs/MIs with dangerous subscription permissions (including Key Vault secret read/list indicators):" -ForegroundColor Green
+        $finalResults = $results | Sort-Object SubscriptionName, PrincipalId, RoleName, ScopeType, AssignmentScope -Unique
+        $finalResults |
+            Format-Table -Property SubscriptionName, PrincipalName, PrincipalId, PrincipalType, ServicePrincipalType, RoleName, ScopeType, AssignmentScope, DangerousSignals -Wrap -AutoSize |
+            Out-Host
+        return $finalResults
+    }
+    else {
+        Write-Host "`n[-] No SP/MI dangerous subscription permission signals found based on current rules." -ForegroundColor Red
         return @()
     }
 }
