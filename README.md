@@ -2,6 +2,8 @@
 
 **Azure AppHunter** is an open-source PowerShell tool built for **security researchers**, **red teamers**, and **defenders** to identify **excessive or dangerous permissions** assigned to **Azure Service Principals**.
 
+ℹ️ This tool was created by [Marios Gyftos](https://www.linkedin.com/in/marios-gyftos-a6b62122/) and [Nikos Vourdas](https://www.linkedin.com/in/nickvourd/).
+
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 ---
